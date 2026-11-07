@@ -4,7 +4,7 @@ Trabalho de Redes de Computadores II: transferência confiável de arquivos sobr
 
 - [Enunciado](tp-rc2.pdf)
 - [Plano de implementação](docs/plano-de-implementacao.md)
-- [Relatório inicial ACM](article/main.tex)
+- [Modelo SBC](article/main.tex)
 
 ## Ambiente
 
@@ -37,4 +37,4 @@ make -C article
 # PDF: article/main.pdf
 ```
 
-O relatório inicial usa ACM conforme solicitado; o enunciado pede SBC para a entrega final.
+Modelo SBC vazio, com arquivos de estilo obtidos do [modelo disponibilizado pelo SBGames](https://www.sbgames.org/arquivos/Template_SBC/template-latex/).

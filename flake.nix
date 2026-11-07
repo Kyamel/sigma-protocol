@@ -19,7 +19,7 @@
           pkgs = import nixpkgs { inherit system; };
           tex = pkgs.texlive.combine {
             inherit (pkgs.texlive)
-              scheme-medium acmart latexmk totpages
+              scheme-medium titlesec latexmk totpages
               environ trimspaces framed zref hyperxmp ncctools comment ifmtarg preprint upquote
               libertine inconsolata newtx
               collection-langportuguese;
