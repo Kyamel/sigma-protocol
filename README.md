@@ -4,6 +4,8 @@ Trabalho de Redes de Computadores II: transferência confiável de arquivos sobr
 
 - [Enunciado](tp-rc2.pdf)
 - [Plano de implementação](docs/plano-de-implementacao.md)
+- [Passo a passo da etapa 1](docs/passos.md)
+- [Especificação do protocolo](docs/protocolo.md)
 - [Modelo SBC](article/main.tex)
 
 ## Ambiente
@@ -28,6 +30,17 @@ Os comandos são esqueletos iniciais, sem comunicação de rede. Use `-h` para v
 ```sh
 go build ./...
 go test ./...
+go vet ./...
+staticcheck ./...
+go test -run='^$' -fuzz=FuzzDecode -fuzztime=60s ./internal/wire/
+```
+
+`go test -race` precisa de cgo. Se o caminho do projeto tiver espaços, o
+`nix develop` gera um `-L` quebrado em `NIX_LDFLAGS`; remova-o antes:
+
+```sh
+export NIX_LDFLAGS=$(echo "$NIX_LDFLAGS" | tr ' ' '\n' | grep -v outputs/out/lib | tr '\n' ' ')
+go test -race ./...
 ```
 
 ## Relatório

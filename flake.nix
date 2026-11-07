@@ -31,10 +31,16 @@
               git gnumake
               tex poppler-utils
               (python3.withPackages (ps: [ ps.matplotlib ]))
+              zsh
             ] ++ lib.optionals stdenv.isLinux [
               iproute2 tcpdump wireshark-cli
             ];
             GOTOOLCHAIN = "local";
+            shellHook = ''
+              export SHELL=${pkgs.zsh}/bin/zsh
+              exec $SHELL
+            '';
+            
           };
         });
     };
