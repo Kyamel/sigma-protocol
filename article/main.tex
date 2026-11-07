@@ -1,0 +1,259 @@
+\documentclass[sigconf,nonacm]{acmart}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[brazilian]{babel}
+
+\setcopyright{none}
+\settopmatter{printacmref=false}
+\renewcommand{\shortauthors}{Equipe Sigma}
+
+\title{Sigma: projeto de um protocolo de transferência confiável de arquivos sobre UDP}
+\subtitle{Relatório inicial --- CSI510: Redes de Computadores II}
+
+% Substituir pelos integrantes e pela instituição antes da entrega.
+\author{Integrantes do grupo (a preencher)}
+\affiliation{%
+  \institution{Instituição e departamento (a preencher)}
+  \city{Cidade (a preencher)}
+  \country{Brasil}
+}
+
+\begin{document}
+
+\begin{abstract}
+Este relatório apresenta o projeto inicial do Sigma, um protocolo de
+transferência confiável de arquivos sobre UDP implementável em Go. A proposta
+combina autenticação simples, janela deslizante com retransmissão seletiva,
+detecção de corrupção e validação de arquivos por SHA-256. Uma mini-CDN
+selecionará, entre dois servidores em máquinas distintas, aquele com menor RTT
+observado. A avaliação planejada compara quatro cenários de atraso e perda,
+variando a janela e utilizando arquivos de pelo menos 80 MB. São definidos a
+arquitetura, o cabeçalho preliminar e os critérios de medição. O sistema ainda
+não foi implementado; resultados e conclusões experimentais serão acrescentados
+nas próximas etapas.
+\end{abstract}
+
+\keywords{UDP, transferência confiável, janela deslizante, retransmissão, CDN}
+\maketitle
+
+\section{Introdução}
+
+O trabalho prático de CSI510 solicita um sistema cliente-servidor para
+transferência de arquivos sobre UDP, com confiabilidade implementada na
+aplicação, avaliação experimental e seleção de servidores~\cite{enunciado}.
+O QUIC demonstra como um transporte sobre UDP pode incorporar recursos como
+fluxos e mecanismos de recuperação~\cite{rfc9000}. O Sigma utiliza essa
+motivação didática, mas define um protocolo próprio e não pretende ser uma
+implementação compatível com QUIC.
+
+A questão central será observar como RTT, perda de datagramas e tamanho da
+janela influenciam o tempo de conclusão e a vazão útil de transferências.
+Adicionalmente, será avaliado se escolher o servidor de menor RTT melhora o
+desempenho no ambiente experimental.
+
+\section{Objetivos e requisitos}
+
+O sistema deverá autenticar clientes por senha, listar arquivos e permitir
+download e upload. Cliente e servidor deverão detectar falhas de comunicação,
+tratar dados inválidos e produzir mensagens de erro. O transporte deverá
+entregar dados em ordem, detectar perdas, retransmitir e limitar a espera por
+temporizadores. Arquivos recebidos deverão ser validados por SHA-256, com
+registro dos hashes de origem e destino.
+
+A avaliação abrangerá os quatro cenários do enunciado, com gráficos de RTT,
+throughput, perda e retransmissões. A mini-CDN exigirá dois servidores em
+máquinas distintas e seleção automática pelo cliente. Capturas do Wireshark
+deverão evidenciar ACKs, retransmissões e a seleção. A entrega está prevista
+para 15 de dezembro de 2026~\cite{enunciado}.
+
+\section{Arquitetura proposta}
+
+A implementação usará Go e sua biblioteca padrão, incluindo sockets UDP de
+\texttt{net}, serialização com \texttt{encoding/binary}, CRC32C e
+SHA-256~\cite{gonet,gocrc,gosha}. Serão separados os módulos de codificação,
+transporte, autenticação, arquivos, descoberta e métricas, com executáveis
+independentes para cliente e servidor.
+
+Cada sessão terá identificador aleatório, estado e recursos limitados. A
+transferência utilizará leitura e escrita em blocos. Uploads serão gravados em
+arquivos temporários, publicados somente após validação. A resolução de caminhos
+deverá impedir acesso fora do diretório compartilhado, inclusive por links
+simbólicos. Os limites de sessão, tamanho de arquivo e tempo ocioso serão
+configuráveis.
+
+O ambiente Nix fixa o toolchain Go e as ferramentas de compilação do relatório,
+captura e geração de gráficos. O mesmo ambiente é acessível por flakes ou
+\texttt{nix-shell}, via \texttt{flake-compat}. As versões exatas ficam
+registradas no arquivo de lock do repositório.
+
+\section{Projeto do protocolo}
+
+\subsection{Mensagens e cabeçalho}
+
+A proposta inicial utiliza cabeçalho fixo de 44 bytes, com inteiros sem sinal
+em ordem de bytes de rede. A Tabela~\ref{tab:header} resume seus campos.
+O datagrama de aplicação terá até 1.200 bytes, deixando até 1.156 bytes de
+payload. Esse limite reduz o risco de fragmentação em caminhos usuais; caminhos
+com MTU menor permanecem uma limitação da primeira versão.
+
+\begin{table}[ht]
+  \caption{Cabeçalho preliminar. Offsets em bytes.}
+  \label{tab:header}
+  \centering
+  \begin{tabular}{rrl}
+    \toprule
+    Offset & Bytes & Campo \\
+    \midrule
+    0 & 4 & Magic \\
+    4 & 1 & Versão \\
+    5 & 1 & Tipo \\
+    6 & 2 & Flags reservadas \\
+    8 & 8 & Identificador de sessão \\
+    16 & 8 & Identificador de transferência \\
+    24 & 4 & Número de sequência \\
+    28 & 4 & ACK \\
+    32 & 4 & Janela receptora em blocos \\
+    36 & 2 & Tamanho do payload \\
+    38 & 2 & Tamanho do cabeçalho \\
+    40 & 4 & CRC32C \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+O CRC cobrirá cabeçalho e payload, com o próprio campo zerado durante o cálculo.
+Tamanho, versão, checksum e sessão deverão ser validados antes de atualizar o
+estado. O limite de arquivo evitará o retorno do contador de sequência a zero.
+Mensagens de metadados informarão tamanho, nome, tamanho de bloco e SHA-256
+original; a listagem será paginada para respeitar o limite do datagrama.
+
+O ciclo básico será descoberta, autenticação, negociação, transferência,
+validação e conclusão. Mensagens de controle terão IDs e respostas cacheadas
+para repetição idempotente. O encerramento deverá recuperar a perda da
+confirmação final sem recriar a transferência.
+
+\subsection{Autenticação e integridade}
+
+Propõe-se desafio aleatório de uso único, com expiração e resposta HMAC-SHA256
+vinculada à sessão usando segredo derivado da senha. Credenciais não serão
+incluídas nos logs. Essa autenticação simples não oferece confidencialidade,
+autenticação forte do servidor ou proteção contra dicionário offline com senhas
+fracas. Criptografia exige uma extensão específica.
+
+CRC32C detectará corrupção de datagramas; SHA-256 validará o arquivo completo.
+Nenhum dos hashes sem chave autentica um emissor. A transferência só será
+declarada bem-sucedida após comparar os hashes de origem e destino, que serão
+incluídos no relatório final.
+
+\subsection{Janela e retransmissões}
+
+Será implementado Selective Repeat, com ACK individual por bloco, buffer
+receptor limitado e avanço da base após confirmação de um prefixo contíguo.
+Duplicatas receberão ACK novamente, sem reescrever dados. O emissor respeitará
+o menor valor entre sua janela configurada e a capacidade anunciada pelo
+receptor. Sondas permitirão recuperar uma janela zero cuja atualização tenha
+sido perdida.
+
+O RTO será estimado a partir de SRTT e variação de RTT, sem utilizar amostras
+de pacotes retransmitidos. O algoritmo será inspirado na RFC~6298~\cite{rfc6298},
+com limites experimentais documentados, backoff e número máximo de tentativas.
+Perda de ACKs e mensagens de controle também deverá ser tratada. Pacing e
+limite de envio serão utilizados nos ensaios; controle de fluxo não constitui
+controle de congestionamento nem garante equidade com TCP.
+
+\section{Metodologia experimental}
+
+\subsection{Cenários e variáveis}
+
+A Tabela~\ref{tab:scenarios} reproduz a matriz solicitada. A convenção planejada
+é aplicar perda independente por direção, incluindo o caminho de ACKs, e
+registrar essa decisão. Uma taxa de 5\% por direção não equivale à probabilidade
+de falha de uma troca completa.
+
+\begin{table}[ht]
+  \caption{Cenários exigidos para avaliação.}
+  \label{tab:scenarios}
+  \centering
+  \begin{tabular}{rrr}
+    \toprule
+    Cenário & RTT alvo & Perda \\
+    \midrule
+    1 & 25 ms & 0\% \\
+    2 & 100 ms & 0\% \\
+    3 & 100 ms & 5\% \\
+    4 & 400 ms & 5\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Serão usados arquivos de 80 MiB (83.886.080 bytes), excedendo o mínimo de 80 MB,
+e janelas de 1, 8, 32, 128 e 512 blocos. A janela unitária servirá como referência.
+Propõem-se cinco repetições por cenário, janela e direção de transferência,
+com ordem aleatória e sementes registradas. Falhas e timeouts serão preservados.
+
+O atraso será controlado com \texttt{tc netem} em interfaces isoladas Linux,
+distribuindo aproximadamente metade do RTT por direção e descontando a latência
+de base. O RTT efetivo será medido. Serão registrados MTU, limite do enlace,
+buffers, filas, payload, temporizadores, versão do código e características das
+máquinas para identificar gargalos externos.
+
+\subsection{Métricas e evidências}
+
+A vazão útil (\emph{goodput}) será a quantidade de bytes úteis confirmados
+dividida pela duração. O throughput de aplicação incluirá bytes de datagramas
+enviados e retransmissões, com unidade explicitada em Mbit/s. O tempo percebido
+pelo usuário incluirá a confirmação de integridade; sondagem e autenticação
+terão tempos registrados separadamente.
+
+Serão reportados mediana e percentil 95 de RTT, retransmissões, perda observada
+e taxa de sucesso. Timeouts indicam suspeita de perda; medir perda efetiva exige
+correlacionar IDs enviados e recebidos nos dois extremos. Capturas e logs
+distinguirão perdas de DATA e ACKs. Repetições serão resumidas por média e
+dispersão, com método estatístico explicitado.
+
+Os gráficos apresentarão vazão útil em função da janela e do cenário, tempo de
+conclusão e retransmissões. Como referência analítica sem perdas,
+\begin{equation}
+  G \lesssim \min\left(C,\frac{W L}{RTT}\right),
+\end{equation}
+em que $C$ é a capacidade do enlace em bytes por segundo, $W$ a janela em blocos
+e $L$ o payload em bytes. O modelo não substitui as medições e ignora custos de
+processamento, cabeçalhos e recuperação de perdas.
+
+\section{Mini-CDN}
+
+Dois servidores em máquinas distintas disponibilizarão cópias idênticas dos
+arquivos. O cliente enviará cinco sondas UDP com nonce por endpoint e escolherá
+a menor mediana de RTT entre servidores com pelo menos três respostas válidas.
+Empates serão resolvidos pela ordem de configuração. Endpoints indisponíveis
+serão registrados e excluídos da escolha.
+
+A seleção automática será comparada a execuções forçadas em cada servidor,
+mantendo arquivo e janela. O relatório final identificará o servidor escolhido
+e o efeito no tempo total e na vazão útil. A analogia com mapeamento CDN será
+discutida sem atribuir à proposta DNS, anycast, replicação automática ou
+consideração de carga, recursos fora do escopo inicial.
+
+\section{Estado atual e próximas etapas}
+
+Foram preparados o ambiente Nix, o módulo Go, os pontos de entrada iniciais do
+cliente e servidor, o plano de implementação e este relatório.
+As estruturas do protocolo descritas são propostas e serão consolidadas na
+especificação antes da implementação. Não há medições, hashes de transferências
+ou capturas disponíveis nesta etapa.
+
+As próximas etapas são implementar codec e CLIs, serviço de arquivos,
+confiabilidade, mini-CDN e experimentos. Os testes cobrirão corrupção,
+duplicação, reordenação, perda de ACKs e encerramento, além de concorrência e
+limites de recursos. O relatório final incluirá resultados, capturas anotadas,
+hashes, limitações e comparação entre os cenários.
+
+O presente documento usa o formato ACM solicitado para esta versão inicial.
+O enunciado exige modelo SBC para a entrega final; será necessário confirmar
+a aceitação deste formato ou migrar o texto antes da submissão. Autoria e
+afiliação também deverão ser preenchidas.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}
