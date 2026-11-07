@@ -31,3 +31,21 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# LaTeX (o PDF do enunciado continua versionado)
+article/*.aux
+article/*.bbl
+article/*.blg
+article/*.fdb_latexmk
+article/*.fls
+article/*.log
+article/*.out
+article/*.synctex.gz
+article/*.toc
+article/main.pdf
+
+# Artefatos locais
+/result
+/result-*
+/.direnv/
+/bin/
